@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+.mlflow_local/
+mlruns/
+tests/.tmp_test_state/
+data/db/*.db
+.env

@@ -1,0 +1,28 @@
+# Extends the official Airflow image with a *separate* virtualenv containing
+# this project's (heavy: pandas/scikit-learn/mlflow/pyarrow) dependencies.
+#
+# Why a separate venv instead of installing customer-churn straight into
+# Airflow's own environment: Airflow 2.10 pins its own dependencies hard
+# (e.g. SQLAlchemy 1.4, pandas 2.1.4) via a constraints file, and mlflow's
+# own transitive pins (pyarrow in particular) are incompatible with those
+# constraints -- there is no single environment that satisfies both. This
+# is a common real-world situation, not a mistake: orchestrator dependencies
+# and the ML libraries a DAG's tasks use are allowed to diverge. The DAG
+# (airflow_dags/training_dag.py) uses Airflow's ExternalPythonOperator
+# (`@task.external_python`) to run task bodies inside this separate venv's
+# interpreter, while Airflow itself keeps running in its own environment.
+FROM apache/airflow:2.10.4-python3.12
+
+COPY --chown=airflow:root pyproject.toml /tmp/build/pyproject.toml
+COPY --chown=airflow:root src /tmp/build/src
+
+USER airflow
+
+# dill is required by Airflow's ExternalPythonOperator to serialize task
+# callables across the two environments -- installed on both sides.
+RUN pip install --no-cache-dir dill \
+    --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-2.10.4/constraints-3.12.txt"
+
+RUN python -m venv /home/airflow/customer_churn_venv \
+    && /home/airflow/customer_churn_venv/bin/pip install --no-cache-dir --upgrade pip \
+    && /home/airflow/customer_churn_venv/bin/pip install --no-cache-dir dill /tmp/build

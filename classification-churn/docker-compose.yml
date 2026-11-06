@@ -1,0 +1,114 @@
+x-airflow-common: &airflow-common
+  build:
+    context: .
+    dockerfile: Dockerfile.airflow
+  environment: &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres-airflow/airflow
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__API__AUTH_BACKENDS: "airflow.api.auth.backend.basic_auth"
+    CHURN_DB_PATH: /app/data/db/churn.db
+    MLFLOW_TRACKING_URI: http://mlflow:5000
+  volumes:
+    - ./airflow_dags:/opt/airflow/dags
+    - ./data/db:/app/data/db
+    - airflow-logs:/opt/airflow/logs
+  depends_on:
+    postgres-airflow:
+      condition: service_healthy
+
+services:
+  postgres-airflow:
+    image: postgres:16
+    # Airflow's own metadata DB (DAG runs, task state, users) -- unrelated
+    # to the SQLite file under data/db/, which is our mock *business* DB.
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-airflow-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 5s
+      retries: 10
+
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        airflow db migrate
+        airflow users create \
+          --username airflow --password airflow \
+          --firstname Air --lastname Flow \
+          --role Admin --email admin@example.com || true
+
+  airflow-webserver:
+    <<: *airflow-common
+    command: webserver
+    ports:
+      - "8082:8080"
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  mlflow:
+    # Pinned to match the mlflow==2.16.2 client pinned in pyproject.toml --
+    # the registry/tracking REST API can vary across major/minor versions,
+    # so client and server are kept in lockstep deliberately.
+    image: ghcr.io/mlflow/mlflow:v2.16.2
+    # No --default-artifact-root override here: leaving it unset lets it
+    # default to the `mlflow-artifacts:/` proxy scheme (since
+    # --serve-artifacts defaults to true), so clients (running in the
+    # airflow/api containers, on a different filesystem than this
+    # container) upload/download artifacts over HTTP through this server
+    # instead of trying to write directly to a local path that only exists
+    # inside *this* container. --artifacts-destination is where the server
+    # actually persists those proxied artifacts on disk.
+    command: >
+      mlflow server --host 0.0.0.0 --port 5000
+      --backend-store-uri sqlite:////mlflow/data/mlflow.db
+      --artifacts-destination /mlflow/artifacts
+    ports:
+      - "5002:5000"
+    volumes:
+      - mlflow-data:/mlflow/data
+      - mlflow-artifacts:/mlflow/artifacts
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      AIRFLOW_BASE_URL: http://airflow-webserver:8080
+      AIRFLOW_USERNAME: airflow
+      AIRFLOW_PASSWORD: airflow
+      CHURN_DB_PATH: /app/data/db/churn.db
+    ports:
+      - "8002:8000"
+    volumes:
+      - ./data/db:/app/data/db
+    depends_on:
+      mlflow:
+        condition: service_started
+
+volumes:
+  postgres-airflow-data:
+  airflow-logs:
+  mlflow-data:
+  mlflow-artifacts:

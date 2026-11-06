@@ -1,0 +1,16 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+COPY pyproject.toml ./
+COPY src ./src
+COPY app ./app
+
+RUN pip install --no-cache-dir .
+
+ENV HOUSE_PRICES_ROOT=/app
+ENV HOUSE_PRICES_DB_PATH=/app/data/db/house_prices.db
+
+EXPOSE 8000
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
